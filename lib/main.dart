@@ -8,6 +8,7 @@ import 'model_downloader.dart';
 import 'setup_screen.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const SilentScribeApp());
 }
 
@@ -25,15 +26,44 @@ class _SilentScribeAppState extends State<SilentScribeApp> {
   @override
   void initState() {
     super.initState();
-    _checkModels();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Small delay to ensure native plugins are definitely ready to handle channels.
+      Future.delayed(const Duration(milliseconds: 500), _checkModels);
+    });
   }
 
   Future<void> _checkModels() async {
-    final ready = await ModelDownloader.areModelsDownloaded();
-    setState(() {
-      _modelsReady = ready;
-      _isLoading = false;
-    });
+    debugPrint('SilentScribe: Starting _checkModels()...');
+    try {
+      debugPrint('SilentScribe: Calling areModelsDownloaded()...');
+      // Adding a timeout for areModelsDownloaded() call.
+      final ready = await ModelDownloader.areModelsDownloaded().timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          debugPrint('SilentScribe: areModelsDownloaded() timed out.');
+          return false;
+        },
+      );
+      debugPrint('SilentScribe: areModelsDownloaded() returned: $ready');
+      setState(() {
+        _modelsReady = ready;
+        _isLoading = false;
+      });
+      debugPrint('SilentScribe: _checkModels() completed successfully.');
+    } catch (e) {
+      debugPrint('SilentScribe: Error in _checkModels(): $e');
+      setState(() {
+        _isLoading = false;
+        _modelsReady = false; 
+      });
+    } finally {
+      // Ensure we eventually stop showing the spinner even if something weird happens.
+      if (_isLoading) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   @override
@@ -59,7 +89,27 @@ class _SilentScribeAppState extends State<SilentScribeApp> {
       ),
       themeMode: ThemeMode.system,
       home: _isLoading 
-          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          ? Scaffold(
+              body: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 24),
+                    const Text('Initializing SilentScribe...'),
+                    const SizedBox(height: 16),
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          _isLoading = false;
+                        });
+                      }, 
+                      child: const Text('Taking too long? Tap here.')
+                    )
+                  ],
+                ),
+              ),
+            )
           : _modelsReady 
               ? const TranscriptionScreen()
               : SetupScreen(
@@ -106,28 +156,30 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   }
 
   Future<void> _initLlama() async {
-    print('Starting FlutterLlama initialization...');
+    // LLM is now lazy-loaded before generation to save memory during recording/transcription
+    debugPrint('SilentScribe: LLM will be initialized when needed.');
+  }
+
+  Future<void> _lazyLoadLlama() async {
+    if (_llama.isModelLoaded) return;
+    
+    debugPrint('SilentScribe: Lazy-loading Llama model...');
     try {
       final modelPath = await ModelDownloader.getLlamaModelPath();
       final modelFile = File(modelPath);
       if (!await modelFile.exists()) {
-        print('Model file DOES NOT exist at $modelPath');
+        debugPrint('SilentScribe: LLM Model file missing.');
         return;
       }
       
       final success = await _llama.loadModel(LlamaConfig(
         modelPath: modelPath,
-        contextSize: 2048,
-        useGpu: true,
+        contextSize: 1024, // Reduced context for stability
+        useGpu: false,     // CPU is more stable for background processing
       ));
-      
-      if (success) {
-        print('FlutterLlama model loaded successfully!');
-      } else {
-        print('FlutterLlama failed to load model.');
-      }
+      debugPrint('SilentScribe: Llama load success: $success');
     } catch (e) {
-      print('Failed to initialize local LLM: $e');
+      debugPrint('SilentScribe: Failed lazy-loading LLM: $e');
     }
   }
 
@@ -152,6 +204,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
         transcribeRequest: TranscribeRequest(audio: path),
       );
       final rawText = response.text;
+      debugPrint('SilentScribe: Transcription complete: ${rawText.length} chars');
       
       setState(() {
         _transcribedText = rawText;
@@ -159,6 +212,8 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       });
       
       if (_transcribedText.isNotEmpty) {
+        // Now that transcription is done and Whisper is finished, load Llama
+        await _lazyLoadLlama();
         _generateFormattedText(_transcribedText);
       } else {
         setState(() {
@@ -167,6 +222,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
         });
       }
     } catch (e) {
+      debugPrint('SilentScribe: Transcription error: $e');
       setState(() {
         _isProcessing = false;
         _formattedText = 'Error during transcription: $e';
@@ -238,18 +294,26 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   }
 
   Future<void> _toggleRecording() async {
-    if (_isProcessing) return;
+    debugPrint('SilentScribe: _toggleRecording called. isRecording: $_isRecording, isProcessing: $_isProcessing');
+    if (_isProcessing) {
+      debugPrint('SilentScribe: Still processing, ignoring tap.');
+      return;
+    }
     try {
       if (_isRecording) {
+        debugPrint('SilentScribe: Stopping recording...');
         final path = await _audioRecorder.stop();
         setState(() {
           _isRecording = false;
         });
+        debugPrint('SilentScribe: Recording stopped. Path: $path');
         if (path != null) {
           _processAudio(path);
         }
       } else {
+        debugPrint('SilentScribe: Checking permissions...');
         if (await _audioRecorder.hasPermission()) {
+          debugPrint('SilentScribe: Permission granted. Starting recording...');
           final directory = await getTemporaryDirectory();
           final path = '${directory.path}/recording_temp.wav';
           await _audioRecorder.start(
@@ -263,10 +327,13 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
           setState(() {
             _isRecording = true;
           });
+          debugPrint('SilentScribe: Recording started at $path');
+        } else {
+          debugPrint('SilentScribe: Permission DENIED.');
         }
       }
     } catch (e) {
-      debugPrint('Error toggling recording: $e');
+      debugPrint('SilentScribe: Error toggling recording: $e');
     }
   }
 
@@ -292,7 +359,24 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
                 child: _buildOutputArea(theme),
               ),
               const SizedBox(height: 24),
-              _buildRecordingControls(theme),
+              // Main recording button
+              Center(
+                child: FloatingActionButton.large(
+                  onPressed: _toggleRecording,
+                  backgroundColor: _isProcessing 
+                    ? theme.colorScheme.surfaceContainerHighest
+                    : _isRecording 
+                      ? theme.colorScheme.error 
+                      : theme.colorScheme.primaryContainer,
+                  child: _isProcessing 
+                      ? const CircularProgressIndicator()
+                      : Icon(
+                          _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
+                          size: 48,
+                          color: _isRecording ? theme.colorScheme.onError : theme.colorScheme.onPrimaryContainer,
+                        ),
+                ),
+              ),
             ],
           ),
         ),
@@ -387,26 +471,37 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
 
   Widget _buildRecordingControls(ThemeData theme) {
     return Center(
-      child: GestureDetector(
-        onTap: _toggleRecording,
-        child: Container(
-          width: 80,
-          height: 80,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: _isProcessing 
-              ? theme.colorScheme.surfaceContainerHighest
-              : _isRecording 
-                ? theme.colorScheme.error 
-                : theme.colorScheme.primaryContainer,
-          ),
-          child: _isProcessing 
-              ? const Center(child: CircularProgressIndicator())
-              : Icon(
-                  _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
-                  size: 40,
-                  color: _isRecording ? theme.colorScheme.onError : theme.colorScheme.onPrimaryContainer,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: _toggleRecording,
+          borderRadius: BorderRadius.circular(40),
+          child: Container(
+            width: 80,
+            height: 80,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: _isProcessing 
+                ? theme.colorScheme.surfaceContainerHighest
+                : _isRecording 
+                  ? theme.colorScheme.error 
+                  : theme.colorScheme.primaryContainer,
+              boxShadow: [
+                BoxShadow(
+                  color: (_isRecording ? theme.colorScheme.error : theme.colorScheme.primary).withOpacity(0.3),
+                  blurRadius: 15,
+                  offset: const Offset(0, 5),
                 ),
+              ],
+            ),
+            child: _isProcessing 
+                ? const Center(child: CircularProgressIndicator())
+                : Icon(
+                    _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
+                    size: 40,
+                    color: _isRecording ? theme.colorScheme.onError : theme.colorScheme.onPrimaryContainer,
+                  ),
+          ),
         ),
       ),
     );

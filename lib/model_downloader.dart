@@ -12,11 +12,22 @@ class ModelDownloader {
   static const String llamaFileName = 'qwen2.5-0.5b-instruct-q4_k_m.gguf';
 
   static Future<bool> areModelsDownloaded() async {
+    debugPrint('SilentScribe: getApplicationDocumentsDirectory() called...');
     final dir = await getApplicationDocumentsDirectory();
+    debugPrint('SilentScribe: dir: ${dir.path}');
+    
     final whisperFile = File(p.join(dir.path, whisperFileName));
     final llamaFile = File(p.join(dir.path, llamaFileName));
 
-    return await whisperFile.exists() && await llamaFile.exists();
+    debugPrint('SilentScribe: Checking if whisper file exists...');
+    final wExists = await whisperFile.exists();
+    debugPrint('SilentScribe: whisper exists: $wExists');
+
+    debugPrint('SilentScribe: Checking if llama file exists...');
+    final lExists = await llamaFile.exists();
+    debugPrint('SilentScribe: llama exists: $lExists');
+
+    return wExists && lExists;
   }
 
   static Future<String> getWhisperModelPath() async {
