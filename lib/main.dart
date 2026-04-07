@@ -6,6 +6,8 @@ import 'package:whisper_ggml/whisper_ggml.dart';
 import 'package:flutter_llama/flutter_llama.dart';
 import 'model_downloader.dart';
 import 'setup_screen.dart';
+import 'performance_check_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,6 +24,7 @@ class SilentScribeApp extends StatefulWidget {
 class _SilentScribeAppState extends State<SilentScribeApp> {
   bool _isLoading = true;
   bool _modelsReady = false;
+  bool _performanceChecked = false;
 
   @override
   void initState() {
@@ -35,6 +38,9 @@ class _SilentScribeAppState extends State<SilentScribeApp> {
   Future<void> _checkModels() async {
     debugPrint('SilentScribe: Starting _checkModels()...');
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final performanceChecked = prefs.getBool('performance_check_complete') ?? false;
+
       debugPrint('SilentScribe: Calling areModelsDownloaded()...');
       // Adding a timeout for areModelsDownloaded() call.
       final ready = await ModelDownloader.areModelsDownloaded().timeout(
@@ -47,6 +53,7 @@ class _SilentScribeAppState extends State<SilentScribeApp> {
       debugPrint('SilentScribe: areModelsDownloaded() returned: $ready');
       setState(() {
         _modelsReady = ready;
+        _performanceChecked = performanceChecked;
         _isLoading = false;
       });
       debugPrint('SilentScribe: _checkModels() completed successfully.');
@@ -110,15 +117,23 @@ class _SilentScribeAppState extends State<SilentScribeApp> {
                 ),
               ),
             )
-          : _modelsReady 
-              ? const TranscriptionScreen()
-              : SetupScreen(
-                  onSetupComplete: () {
+          : !_performanceChecked
+              ? PerformanceCheckScreen(
+                  onPassed: () {
                     setState(() {
-                      _modelsReady = true;
+                      _performanceChecked = true;
                     });
                   },
-                ),
+                )
+              : _modelsReady 
+                  ? const TranscriptionScreen()
+                  : SetupScreen(
+                      onSetupComplete: () {
+                        setState(() {
+                          _modelsReady = true;
+                        });
+                      },
+                    ),
     );
   }
 }
