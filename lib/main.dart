@@ -178,7 +178,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   Future<void> _lazyLoadLlama() async {
     if (_llama.isModelLoaded) return;
     
-    debugPrint('SilentScribe: Lazy-loading Llama model...');
+    debugPrint('SilentScribe: Loading Llama model for generation...');
     try {
       final modelPath = await ModelDownloader.getLlamaModelPath();
       final modelFile = File(modelPath);
@@ -189,12 +189,12 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       
       final success = await _llama.loadModel(LlamaConfig(
         modelPath: modelPath,
-        contextSize: 1024, // Reduced context for stability
-        useGpu: false,     // CPU is more stable for background processing
+        contextSize: 1024,
+        useGpu: false,     // CPU is more stable for long sessions
       ));
       debugPrint('SilentScribe: Llama load success: $success');
     } catch (e) {
-      debugPrint('SilentScribe: Failed lazy-loading LLM: $e');
+      debugPrint('SilentScribe: Failed loading LLM: $e');
     }
   }
 
@@ -267,7 +267,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
         instruction = 'Rewrite the transcription into clear, polished text.';
     }
 
-    return '<|im_start|>system\nYou are an expert copywriter and editor. Your task is to accurately organize and format transcriptions.<|im_end|>\n<|im_start|>user\n$instruction\n\nTranscription:\n"""\n$input\n"""<|im_end|>\n<|im_start|>assistant\n';
+    return '<|im_start|>system\nYou are an expert copywriter and editor. Your task is to accurately organize and format transcriptions. Output the formatted text directly. Stop immediately after completing the request.<|im_end|>\n<|im_start|>user\n$instruction\n\nTranscription:\n"""\n$input\n"""<|im_end|>\n<|im_start|>assistant\n';
   }
 
   Future<void> _generateFormattedText(String input) async {
@@ -283,7 +283,9 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
        _formattedText = '';
     });
     
-    final prompt = _getPromptForFormat(_selectedFormat, input);
+    // Sanitize input to prevent prompt injection or escape sequences
+    final cleanInput = input.replaceAll('<|im_end|>', '').replaceAll('"""', "'''");
+    final prompt = _getPromptForFormat(_selectedFormat, cleanInput);
     
     try {
       final params = GenerationParams(
@@ -293,18 +295,40 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       );
       
       await for (final token in _llama.generateStream(params)) {
+        if (token.contains('<|im_end|>')) {
+          final parts = token.split('<|im_end|>');
+          if (mounted) {
+            setState(() {
+              _formattedText += parts[0];
+            });
+          }
+          break;
+        }
+        
+        if (mounted) {
+          setState(() {
+            _formattedText += token;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('SilentScribe: Generation error: $e');
+      if (mounted) {
         setState(() {
-          _formattedText += token;
+          _formattedText = 'Generation error: $e';
         });
       }
-      setState(() {
-        _isProcessing = false;
-      });
-    } catch (e) {
-       setState(() {
-         _isProcessing = false;
-         _formattedText = 'Generation error: $e';
-       });
+    } finally {
+      // Proactively unload model after each generation to save memory 
+      // and prevent state accumulation bugs (duplicates/hanging).
+      debugPrint('SilentScribe: Unloading LLM to free resources...');
+      await _llama.unloadModel();
+      
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      }
     }
   }
 
