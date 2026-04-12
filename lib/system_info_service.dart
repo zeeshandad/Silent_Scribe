@@ -1,5 +1,6 @@
 import 'package:system_info2/system_info2.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:io';
 
 class SystemInfoService {
@@ -31,5 +32,58 @@ class SystemInfoService {
       return iosInfo.utsname.machine;
     }
     return 'Unknown';
+  }
+
+  Future<bool> get isFlagship async {
+    // Prioritize RAM check: >= 8GB is a strong flagship indicator for modern AI apps
+    if (getTotalRamMB() >= 8000) return true;
+
+    String processor = await getProcessorInfo();
+    processor = processor.toLowerCase();
+    
+    // Broad SoC keywords representing High-Performance / Neural Engine capable chips
+    final flagshipKeywords = [
+      'apple a14', 'apple a15', 'apple a16', 'apple a17', 'apple a18', 
+      'm1', 'm2', 'm3', 'm4',
+      'snapdragon 8 ', 'sm8450', 'sm8550', 'sm8650', 'sm8750',
+      'google tensor', 'gs101', 'gs201', 'gs301', 'gs401',
+      'bluejay', 'cheetah', 'panther', 'lynx', 'shiba', 'husky', 'akita', 'caiman', 'komodo',
+      'exynos 2200', 'exynos 2400',
+      'dimensity 9000', 'dimensity 9200', 'dimensity 9300'
+    ];
+    
+    return flagshipKeywords.any((keyword) => processor.contains(keyword));
+  }
+
+  Future<Map<String, int>> calculateSystemMetrics() async {
+    final ramMB = getTotalRamMB();
+    final flagship = await isFlagship;
+    final processor = await getProcessorInfo();
+
+    int maxContextTokens;
+    int maxMinutes;
+
+    if (ramMB >= 11500 || (ramMB >= 8000 && flagship)) {
+      // Ultra-Tier (12GB+ RAM or 8GB+ with Flagship SoC)
+      maxContextTokens = 16384; // Conservative maximum for mobile stability
+      maxMinutes = 60;
+    } else if (ramMB >= 7500 || flagship) {
+      // High-Tier (8GB+ RAM or standard Flagship like Pixel 7/8)
+      maxContextTokens = 8192;
+      maxMinutes = 30;
+    } else {
+      // Standard-Tier (4GB-6GB RAM e.g. Pixel 6a)
+      maxContextTokens = 4096;
+      maxMinutes = 15;
+    }
+
+    debugPrint('SystemInfo: Processor: $processor');
+    debugPrint('SystemInfo: RAM: $ramMB MB, Flagship: $flagship');
+    debugPrint('SystemInfo: Tiering Result: ${maxContextTokens} tokens, ${maxMinutes} mins');
+
+    return {
+      'maxContextTokens': maxContextTokens,
+      'maxMinutes': maxMinutes,
+    };
   }
 }

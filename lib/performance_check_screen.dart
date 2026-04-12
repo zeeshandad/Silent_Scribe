@@ -104,6 +104,12 @@ class _PerformanceCheckScreenState extends State<PerformanceCheckScreen> {
 
   Future<void> _complete() async {
     final prefs = await SharedPreferences.getInstance();
+    
+    // Calculate and save dynamic metrics for this specific device
+    final metrics = await _systemInfo.calculateSystemMetrics();
+    await prefs.setInt('max_context_tokens', metrics['maxContextTokens']!);
+    await prefs.setInt('max_recording_minutes', metrics['maxMinutes']!);
+    
     await prefs.setBool('performance_check_complete', true);
     widget.onPassed();
   }

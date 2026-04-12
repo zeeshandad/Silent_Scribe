@@ -1,39 +1,102 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_llama/flutter_llama.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../model_downloader.dart';
+import '../system_info_service.dart';
+
+enum PerformanceLevel { legacy, balanced, ultra }
 
 class LLMService {
   final FlutterLlama _llama = FlutterLlama.instance;
+  final SystemInfoService _systemInfoService = SystemInfoService();
   bool _isInitialized = false;
 
-  Future<void> ensureModelLoaded() async {
-    if (_llama.isModelLoaded) return;
-
-    debugPrint('LLMService: Loading Llama model...');
-    final modelPath = await ModelDownloader.getLlamaModelPath();
-    final modelFile = File(modelPath);
-    if (!await modelFile.exists()) {
-      throw Exception('LLM Model file missing.');
+  // Strict Mutual Exclusion lock for model loading
+  bool _isLocking = false;
+  Future<void> _waitForLock() async {
+    while (_isLocking) {
+      await Future.delayed(const Duration(milliseconds: 50));
     }
+    _isLocking = true;
+  }
+  
+  void _releaseLock() {
+    _isLocking = false;
+  }
 
-    final success = await _llama.loadModel(LlamaConfig(
-      modelPath: modelPath,
-      contextSize: 1024,
-      useGpu: false,
-    ));
+  Future<PerformanceLevel> _getPerformanceLevel() async {
+    int ram = _systemInfoService.getTotalRamMB();
+    bool flagship = await _systemInfoService.isFlagship;
     
-    if (!success) {
-      throw Exception('Failed to load LLM model.');
+    if (ram >= 8192 || flagship) return PerformanceLevel.ultra;
+    if (ram < 4096) return PerformanceLevel.legacy;
+    return PerformanceLevel.balanced;
+  }
+
+  Future<LlamaConfig> _getOptimalComputeConfig(PerformanceLevel level, String modelPath) async {
+    bool useGpu = level == PerformanceLevel.ultra;
+    // Optimize thread affinity: Legacy relies entirely on CPU, prioritize higher threads.
+    int nThreads = level == PerformanceLevel.legacy ? 4 : 2; 
+    int nGpuLayers = useGpu ? -1 : 0;
+
+    // Load device-specific context tokens calculated during audit
+    final prefs = await SharedPreferences.getInstance();
+    final contextSize = prefs.getInt('max_context_tokens') ?? 16384;
+    
+    debugPrint('LLMService: Initializing with contextSize: $contextSize, useGpu: $useGpu');
+    
+    return LlamaConfig(
+      modelPath: modelPath,
+      contextSize: contextSize,
+      batchSize: contextSize, // Synchronize batch size with context to prevent ggml_abort crashes
+      useGpu: useGpu,
+      nThreads: nThreads,
+      nGpuLayers: nGpuLayers,
+    );
+  }
+
+  Future<void> ensureModelLoaded() async {
+    await _waitForLock();
+    try {
+      if (_llama.isModelLoaded) return;
+
+      debugPrint('LLMService: Loading Llama model...');
+      final modelPath = await ModelDownloader.getLlamaModelPath();
+      final modelFile = File(modelPath);
+      if (!await modelFile.exists()) {
+        throw Exception('LLM Model file missing.');
+      }
+
+      final performanceLevel = await _getPerformanceLevel();
+      final config = await _getOptimalComputeConfig(performanceLevel, modelPath);
+
+      final success = await _llama.loadModel(config);
+      
+      if (!success) {
+        throw Exception('Failed to load LLM model.');
+      }
+      _isInitialized = true;
+    } finally {
+      _releaseLock();
     }
-    _isInitialized = true;
   }
 
   Future<void> unloadModel() async {
-    // NOTE: Calling _llama.unloadModel() triggers EXC_BAD_ACCESS in the native
-    // llama_model destructor (flutter_llama plugin bug). The model is kept
-    // resident for the app lifetime; iOS will reclaim memory on app termination.
-    _isInitialized = false;
+    await _waitForLock();
+    try {
+      if (_isInitialized) {
+        try {
+          await _llama.unloadModel();
+        } catch (_) {
+          // Ignore known native plugin destruct crash if it surfaces here.
+        }
+        _isInitialized = false;
+      }
+    } finally {
+      _releaseLock();
+    }
   }
 
   String getPromptForFormat(String format, String input) {
@@ -61,11 +124,27 @@ class LLMService {
     return '<|im_start|>system\nYou are an expert copywriter and editor. Your task is to accurately organize and format transcriptions. Output the formatted text directly. Stop immediately after completing the request.<|im_end|>\n<|im_start|>user\n$instruction\n\nTranscription:\n"""\n$input\n"""<|im_end|>\n<|im_start|>assistant\n';
   }
 
-  Stream<String> generateFormattedTextStream(String input, String format) async* {
+    Stream<String> generateFormattedTextStream(String input, String format) async* {
     await ensureModelLoaded();
 
+    // Load context size to determine safe truncation limit
+    final prefs = await SharedPreferences.getInstance();
+    final contextSize = prefs.getInt('max_context_tokens') ?? 4096;
+
     final cleanInput = input.replaceAll('<|im_end|>', '').replaceAll('"""', "'''");
-    final prompt = getPromptForFormat(format, cleanInput);
+    
+    // Safety Truncation: 1.5 chars per token for high-density, 2.5 for balanced.
+    // Increased to a more generous limit now that batchSize alignment is resolved.
+    final int safeCharLimit = ((contextSize - 512) * 2.5).floor();
+    
+    String finalInput = cleanInput;
+    if (cleanInput.length > safeCharLimit) {
+      debugPrint('LLMService: Input too long (${cleanInput.length} chars). Truncating to $safeCharLimit chars for stability.');
+      finalInput = cleanInput.substring(0, safeCharLimit);
+    }
+
+    final prompt = getPromptForFormat(format, finalInput);
+    debugPrint('LLMService: Final prompt length: ${prompt.length} characters.');
 
     final params = GenerationParams(
       prompt: prompt,

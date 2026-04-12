@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:whisper_ggml/whisper_ggml.dart';
 import 'model_downloader.dart';
+import 'system_info_service.dart';
 import 'setup_screen.dart';
 import 'performance_check_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -166,13 +168,45 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   String _formattedText = 'Format your transcription with the local LLM. Results will appear here.';
   String? _lastRecordedPath;
   
+  // Dynamic recording limit variables
+  int _maxMinutes = 60;
+  Timer? _recordingTimer;
+  Duration _elapsedTime = Duration.zero;
+  
   final LLMService _llmService = LLMService();
   
   @override
   void initState() {
     super.initState();
     _audioRecorder = AudioRecorder();
-    _initLlama();
+    _loadDeviceLimits();
+  }
+
+  Future<void> _loadDeviceLimits() async {
+    final prefs = await SharedPreferences.getInstance();
+    int? maxMinutes = prefs.getInt('max_recording_minutes');
+    int? maxTokens = prefs.getInt('max_context_tokens');
+
+    bool v3Stable = prefs.getBool('v3_metrics_stable') ?? false;
+
+    // Force re-calculation for the v3 stability build (Batch Size Sync + Bluejay identification)
+    if (maxMinutes == null || maxTokens == null || !v3Stable) {
+      debugPrint('SilentScribe: Re-calculating stable dynamic limits (v3)...');
+      final metrics = await SystemInfoService().calculateSystemMetrics();
+      maxMinutes = metrics['maxMinutes']!;
+      maxTokens = metrics['maxContextTokens']!;
+      
+      // Save them securely
+      await prefs.setInt('max_context_tokens', maxTokens);
+      await prefs.setInt('max_recording_minutes', maxMinutes);
+      await prefs.setBool('v3_metrics_stable', true);
+    }
+
+    if (mounted) {
+      setState(() {
+        _maxMinutes = maxMinutes!;
+      });
+    }
   }
 
   Future<void> _initLlama() async {
@@ -181,6 +215,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
 
   @override
   void dispose() {
+    _recordingTimer?.cancel();
     _audioRecorder.dispose();
     _llmService.unloadModel();
     super.dispose();
@@ -204,8 +239,12 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       
       setState(() {
         _transcribedText = rawText;
-        _formattedText = 'Generating $_selectedFormat...';
+        _formattedText = 'Preparing High-Quality Output...';
       });
+      
+      // Memory recovery delay: Allow OS to reclaim Whisper native buffers before LLM loading
+      // Extended to 1000ms for robust Android resource reclamation
+      await Future.delayed(const Duration(milliseconds: 1000));
       
       if (_transcribedText.isNotEmpty) {
         _generateFormattedText(_transcribedText);
@@ -285,6 +324,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
     try {
       if (_isRecording) {
         debugPrint('SilentScribe: Stopping recording...');
+        _recordingTimer?.cancel();
         final path = await _audioRecorder.stop();
         setState(() {
           _isRecording = false;
@@ -308,9 +348,14 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
             ),
             path: path,
           );
+          
           setState(() {
             _isRecording = true;
+            _elapsedTime = Duration.zero;
           });
+          
+          _startTimer();
+          
           debugPrint('SilentScribe: Recording started at $path');
         } else {
           debugPrint('SilentScribe: Permission DENIED.');
@@ -319,6 +364,39 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
     } catch (e) {
       debugPrint('SilentScribe: Error toggling recording: $e');
     }
+  }
+
+  void _startTimer() {
+    _recordingTimer?.cancel();
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _elapsedTime = Duration(seconds: timer.tick);
+        });
+        
+        // Automated enforcement of dynamic limit
+        if (_elapsedTime.inMinutes >= _maxMinutes) {
+          _toggleRecording();
+          _showLimitReachedNotification();
+        }
+      }
+    });
+  }
+
+  void _showLimitReachedNotification() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Auto-stop: Device specific recording limit of $_maxMinutes mins reached.'),
+        backgroundColor: Theme.of(context).colorScheme.error,
+      ),
+    );
+  }
+
+  String _formatDuration(Duration duration) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final minutes = twoDigits(duration.inMinutes.remainder(60));
+    final seconds = twoDigits(duration.inSeconds.remainder(60));
+    return '$minutes:$seconds';
   }
 
   @override
@@ -354,23 +432,48 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
                 child: _buildOutputArea(theme),
               ),
               const SizedBox(height: 24),
-              // Main recording button
-              Center(
-                child: FloatingActionButton.large(
-                  onPressed: _toggleRecording,
-                  backgroundColor: _isProcessing 
-                    ? theme.colorScheme.surfaceContainerHighest
-                    : _isRecording 
-                      ? theme.colorScheme.error 
-                      : theme.colorScheme.primaryContainer,
-                  child: _isProcessing 
-                      ? const CircularProgressIndicator()
-                      : Icon(
-                          _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
-                          size: 48,
-                          color: _isRecording ? theme.colorScheme.onError : theme.colorScheme.onPrimaryContainer,
+              // Main recording area with limit indicator and timer
+              Column(
+                children: [
+                  if (_isRecording) 
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 16.0),
+                      child: Text(
+                        '${_formatDuration(_elapsedTime)} / $_maxMinutes:00',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: theme.colorScheme.error,
+                          fontWeight: FontWeight.bold,
+                          fontFeatures: [const FontFeature.tabularFigures()],
                         ),
-                ),
+                      ),
+                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const SizedBox(width: 48), // Spacer for balance
+                      FloatingActionButton.large(
+                        onPressed: _toggleRecording,
+                        backgroundColor: _isProcessing 
+                          ? theme.colorScheme.surfaceContainerHighest
+                          : _isRecording 
+                            ? theme.colorScheme.error 
+                            : theme.colorScheme.primaryContainer,
+                        child: _isProcessing 
+                            ? const CircularProgressIndicator()
+                            : Icon(
+                                _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
+                                size: 48,
+                                color: _isRecording ? theme.colorScheme.onError : theme.colorScheme.onPrimaryContainer,
+                              ),
+                      ),
+                      const SizedBox(width: 8),
+                      Tooltip(
+                        message: 'Device-Optimized Limit: $_maxMinutes mins\nCalculated based on your RAM and CPU for fail-safe offline processing.',
+                        child: Icon(Icons.info_outline_rounded, color: theme.colorScheme.onSurfaceVariant.withOpacity(0.6)),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ],
           ),
