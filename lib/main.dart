@@ -1,16 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
-import 'dart:io';
 import 'package:whisper_ggml/whisper_ggml.dart';
-import 'package:flutter_llama/flutter_llama.dart';
 import 'model_downloader.dart';
 import 'setup_screen.dart';
 import 'performance_check_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'repository/transcription_repository.dart';
+import 'models/transcription_entry.dart';
+import 'screens/library_screen.dart';
+import 'services/llm_service.dart';
+import 'services/sharing_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await TranscriptionRepository.init();
   runApp(const SilentScribeApp());
 }
 
@@ -160,8 +164,9 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   bool _isProcessing = false;
   String _transcribedText = 'Press the microphone button to start recording. Your speech will be transcribed securely on device.';
   String _formattedText = 'Format your transcription with the local LLM. Results will appear here.';
+  String? _lastRecordedPath;
   
-  final FlutterLlama _llama = FlutterLlama.instance;
+  final LLMService _llmService = LLMService();
   
   @override
   void initState() {
@@ -171,37 +176,13 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   }
 
   Future<void> _initLlama() async {
-    // LLM is now lazy-loaded before generation to save memory during recording/transcription
-    debugPrint('SilentScribe: LLM will be initialized when needed.');
-  }
-
-  Future<void> _lazyLoadLlama() async {
-    if (_llama.isModelLoaded) return;
-    
-    debugPrint('SilentScribe: Loading Llama model for generation...');
-    try {
-      final modelPath = await ModelDownloader.getLlamaModelPath();
-      final modelFile = File(modelPath);
-      if (!await modelFile.exists()) {
-        debugPrint('SilentScribe: LLM Model file missing.');
-        return;
-      }
-      
-      final success = await _llama.loadModel(LlamaConfig(
-        modelPath: modelPath,
-        contextSize: 1024,
-        useGpu: false,     // CPU is more stable for long sessions
-      ));
-      debugPrint('SilentScribe: Llama load success: $success');
-    } catch (e) {
-      debugPrint('SilentScribe: Failed loading LLM: $e');
-    }
+    // LLM is now lazy-loaded before generation to save memory 
   }
 
   @override
   void dispose() {
     _audioRecorder.dispose();
-    _llama.unloadModel();
+    _llmService.unloadModel();
     super.dispose();
   }
 
@@ -227,8 +208,6 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       });
       
       if (_transcribedText.isNotEmpty) {
-        // Now that transcription is done and Whisper is finished, load Llama
-        await _lazyLoadLlama();
         _generateFormattedText(_transcribedText);
       } else {
         setState(() {
@@ -245,72 +224,25 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
     }
   }
 
-  String _getPromptForFormat(String format, String input) {
-    String instruction;
-    switch (format) {
-      case 'Polished Writing':
-        instruction = 'Rewrite the following rambling, disjointed voice transcription into clear, coherent, and polished text. Remove all filler words, false starts, and repetitions. Fix grammar and organize the thoughts into logical paragraphs. Preserve the original meaning, tone, and first-person perspective, making the final output read beautifully.';
-        break;
-      case 'Meeting Minutes':
-        instruction = 'Format the following transcript into concise, professional meeting minutes. Extract key discussion points, decisions made, and action items. Present them with clear bold headings.';
-        break;
-      case 'Executive Summary':
-        instruction = 'Provide a high-level executive summary of the following transcript. Summarize the core message in a single paragraph, followed by 3-4 key takeaways.';
-        break;
-      case 'Email Draft':
-        instruction = 'Turn the following disjointed transcription into a professional and polite email draft. Give it a suitable Subject line and structure the body logically.';
-        break;
-      case 'Bullet Points':
-        instruction = 'Distill the following transcription into a clear list of organized bullet points, capturing all the main ideas seamlessly.';
-        break;
-      default:
-        instruction = 'Rewrite the transcription into clear, polished text.';
-    }
-
-    return '<|im_start|>system\nYou are an expert copywriter and editor. Your task is to accurately organize and format transcriptions. Output the formatted text directly. Stop immediately after completing the request.<|im_end|>\n<|im_start|>user\n$instruction\n\nTranscription:\n"""\n$input\n"""<|im_end|>\n<|im_start|>assistant\n';
-  }
-
   Future<void> _generateFormattedText(String input) async {
-    if (!_llama.isModelLoaded) {
-      setState(() {
-        _isProcessing = false;
-        _formattedText = 'Local LLM not loaded.';
-      });
-      return;
-    }
-    
     setState(() {
        _formattedText = '';
     });
     
-    // Sanitize input to prevent prompt injection or escape sequences
-    final cleanInput = input.replaceAll('<|im_end|>', '').replaceAll('"""', "'''");
-    final prompt = _getPromptForFormat(_selectedFormat, cleanInput);
-    
     try {
-      final params = GenerationParams(
-        prompt: prompt,
-        maxTokens: 512,
-        temperature: 0.7,
-      );
-      
-      await for (final token in _llama.generateStream(params)) {
-        if (token.contains('<|im_end|>')) {
-          final parts = token.split('<|im_end|>');
-          if (mounted) {
-            setState(() {
-              _formattedText += parts[0];
-            });
-          }
-          break;
-        }
-        
+      String fullText = '';
+      await for (final token in _llmService.generateFormattedTextStream(input, _selectedFormat)) {
+        fullText += token;
         if (mounted) {
           setState(() {
-            _formattedText += token;
+            _formattedText = fullText;
           });
         }
       }
+      
+      // Save to history after successful generation
+      await _saveToHistory();
+      
     } catch (e) {
       debugPrint('SilentScribe: Generation error: $e');
       if (mounted) {
@@ -319,16 +251,28 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
         });
       }
     } finally {
-      // Proactively unload model after each generation to save memory 
-      // and prevent state accumulation bugs (duplicates/hanging).
-      debugPrint('SilentScribe: Unloading LLM to free resources...');
-      await _llama.unloadModel();
-      
+      await _llmService.unloadModel();
       if (mounted) {
         setState(() {
           _isProcessing = false;
         });
       }
+    }
+  }
+
+  Future<void> _saveToHistory() async {
+    try {
+      final entry = TranscriptionEntry()
+        ..rawTranscript = _transcribedText
+        ..formattedText = _formattedText
+        ..timestamp = DateTime.now()
+        ..selectedStyle = _selectedFormat
+        ..audioFilePath = _lastRecordedPath;
+      
+      await TranscriptionRepository().saveEntry(entry);
+      debugPrint('SilentScribe: Saved to history.');
+    } catch (e) {
+      debugPrint('SilentScribe: Failed to save to history: $e');
     }
   }
 
@@ -347,6 +291,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
         });
         debugPrint('SilentScribe: Recording stopped. Path: $path');
         if (path != null) {
+          _lastRecordedPath = path;
           _processAudio(path);
         }
       } else {
@@ -385,6 +330,17 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       appBar: AppBar(
         title: const Text('SilentScribe', style: TextStyle(fontWeight: FontWeight.w600)),
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history_rounded),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const LibraryScreen()),
+              );
+            },
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -489,15 +445,38 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
                       ),
                     ),
                   ),
-                  SingleChildScrollView(
-                    child: Text(
-                      _formattedText,
-                      style: TextStyle(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        fontSize: 16,
-                        height: 1.5,
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        child: SingleChildScrollView(
+                          child: Text(
+                            _formattedText,
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 16,
+                              height: 1.5,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
+                      const Divider(),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.copy_rounded, size: 20),
+                            onPressed: () => SharingService.copyToClipboard(context, _formattedText),
+                            tooltip: 'Copy to clipboard',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.share_rounded, size: 20),
+                            onPressed: () => _showShareOptions(context),
+                            tooltip: 'Share',
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -508,39 +487,38 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
     );
   }
 
-  Widget _buildRecordingControls(ThemeData theme) {
-    return Center(
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: _toggleRecording,
-          borderRadius: BorderRadius.circular(40),
-          child: Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: _isProcessing 
-                ? theme.colorScheme.surfaceContainerHighest
-                : _isRecording 
-                  ? theme.colorScheme.error 
-                  : theme.colorScheme.primaryContainer,
-              boxShadow: [
-                BoxShadow(
-                  color: (_isRecording ? theme.colorScheme.error : theme.colorScheme.primary).withOpacity(0.3),
-                  blurRadius: 15,
-                  offset: const Offset(0, 5),
-                ),
-              ],
+  void _showShareOptions(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.text_fields),
+              title: const Text('Share as Plain Text'),
+              onTap: () {
+                Navigator.pop(context);
+                SharingService.shareAsPlainText(_formattedText);
+              },
             ),
-            child: _isProcessing 
-                ? const Center(child: CircularProgressIndicator())
-                : Icon(
-                    _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
-                    size: 40,
-                    color: _isRecording ? theme.colorScheme.onError : theme.colorScheme.onPrimaryContainer,
-                  ),
-          ),
+            ListTile(
+              leading: const Icon(Icons.picture_as_pdf),
+              title: const Text('Share as PDF Report'),
+              onTap: () {
+                Navigator.pop(context);
+                SharingService.shareAsPdf('SilentScribe - $_selectedFormat', _formattedText);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('Share as Quote Card'),
+              onTap: () {
+                Navigator.pop(context);
+                SharingService.shareAsImage(context, _formattedText, _selectedFormat);
+              },
+            ),
+          ],
         ),
       ),
     );
