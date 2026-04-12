@@ -30,7 +30,9 @@ class LLMService {
   }
 
   Future<void> unloadModel() async {
-    await _llama.unloadModel();
+    // NOTE: Calling _llama.unloadModel() triggers EXC_BAD_ACCESS in the native
+    // llama_model destructor (flutter_llama plugin bug). The model is kept
+    // resident for the app lifetime; iOS will reclaim memory on app termination.
     _isInitialized = false;
   }
 
@@ -78,7 +80,6 @@ class LLMService {
       }
       yield token;
     }
-    
-    // We don't unload here because the caller might want to keep it for a bit or handle unloading
+    // Model stays loaded — unloadModel() is a no-op to avoid native crash.
   }
 }

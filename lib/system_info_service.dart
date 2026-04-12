@@ -4,11 +4,21 @@ import 'dart:io';
 
 class SystemInfoService {
   int getTotalRamMB() {
-    return SysInfo.getTotalPhysicalMemory() ~/ (1024 * 1024);
+    if (Platform.isIOS) return 4096; // iOS workaround
+    try {
+      return SysInfo.getTotalPhysicalMemory() ~/ (1024 * 1024);
+    } catch (_) {
+      return 4096;
+    }
   }
 
   int getFreeRamMB() {
-    return SysInfo.getFreePhysicalMemory() ~/ (1024 * 1024);
+    if (Platform.isIOS) return 2048; // iOS workaround
+    try {
+      return SysInfo.getFreePhysicalMemory() ~/ (1024 * 1024);
+    } catch (_) {
+      return 2048;
+    }
   }
 
   Future<String> getProcessorInfo() async {
