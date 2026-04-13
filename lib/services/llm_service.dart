@@ -36,7 +36,9 @@ class LLMService {
   }
 
   Future<LlamaConfig> _getOptimalComputeConfig(PerformanceLevel level, String modelPath) async {
-    bool useGpu = level == PerformanceLevel.ultra;
+    // Force GPU (Metal) on all iOS devices for efficiency and stability
+    bool useGpu = level == PerformanceLevel.ultra || Platform.isIOS;
+    
     // Optimize thread affinity: Legacy relies entirely on CPU, prioritize higher threads.
     int nThreads = level == PerformanceLevel.legacy ? 4 : 2; 
     int nGpuLayers = useGpu ? -1 : 0;
@@ -45,12 +47,15 @@ class LLMService {
     final prefs = await SharedPreferences.getInstance();
     final contextSize = prefs.getInt('max_context_tokens') ?? 16384;
     
-    debugPrint('LLMService: Initializing with contextSize: $contextSize, useGpu: $useGpu');
+    // Decouple batchSize from contextSize to prevent OOM on mobile. 512 is a safe standard.
+    int batchSize = (Platform.isAndroid || Platform.isIOS) ? 512 : contextSize;
+    
+    debugPrint('LLMService: Initializing with contextSize: $contextSize, batchSize: $batchSize, useGpu: $useGpu');
     
     return LlamaConfig(
       modelPath: modelPath,
       contextSize: contextSize,
-      batchSize: contextSize, // Synchronize batch size with context to prevent ggml_abort crashes
+      batchSize: batchSize,
       useGpu: useGpu,
       nThreads: nThreads,
       nGpuLayers: nGpuLayers,

@@ -17,12 +17,17 @@ class TranscriptionRepository {
     _initialized = true;
   }
 
-  Future<List<TranscriptionEntry>> getAllEntries() async {
-    return await _isar.transcriptionEntrys.where().sortByTimestampDesc().findAll();
+  Future<List<TranscriptionEntry>> getAllEntries({int offset = 0, int limit = 20}) async {
+    return await _isar.transcriptionEntrys
+        .where()
+        .sortByTimestampDesc()
+        .offset(offset)
+        .limit(limit)
+        .findAll();
   }
 
-  Future<List<TranscriptionEntry>> searchEntries(String query) async {
-    if (query.isEmpty) return getAllEntries();
+  Future<List<TranscriptionEntry>> searchEntries(String query, {int offset = 0, int limit = 20}) async {
+    if (query.isEmpty) return getAllEntries(offset: offset, limit: limit);
     
     return await _isar.transcriptionEntrys
         .filter()
@@ -30,6 +35,8 @@ class TranscriptionRepository {
         .or()
         .formattedTextContains(query, caseSensitive: false)
         .sortByTimestampDesc()
+        .offset(offset)
+        .limit(limit)
         .findAll();
   }
 

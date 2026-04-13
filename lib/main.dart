@@ -434,6 +434,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
               const SizedBox(height: 24),
               // Main recording area with limit indicator and timer
               Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   if (_isRecording) 
                     Padding(
@@ -447,32 +448,42 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
                         ),
                       ),
                     ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const SizedBox(width: 48), // Spacer for balance
-                      FloatingActionButton.large(
-                        onPressed: _toggleRecording,
-                        backgroundColor: _isProcessing 
-                          ? theme.colorScheme.surfaceContainerHighest
-                          : _isRecording 
-                            ? theme.colorScheme.error 
-                            : theme.colorScheme.primaryContainer,
-                        child: _isProcessing 
-                            ? const CircularProgressIndicator()
-                            : Icon(
-                                _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
-                                size: 48,
-                                color: _isRecording ? theme.colorScheme.onError : theme.colorScheme.onPrimaryContainer,
-                              ),
-                      ),
-                      const SizedBox(width: 8),
-                      Tooltip(
-                        message: 'Device-Optimized Limit: $_maxMinutes mins\nCalculated based on your RAM and CPU for fail-safe offline processing.',
-                        child: Icon(Icons.info_outline_rounded, color: theme.colorScheme.onSurfaceVariant.withOpacity(0.6)),
-                      ),
-                    ],
+                  FloatingActionButton.large(
+                    onPressed: _toggleRecording,
+                    backgroundColor: _isProcessing 
+                      ? theme.colorScheme.surfaceContainerHighest
+                      : _isRecording 
+                        ? theme.colorScheme.error 
+                        : theme.colorScheme.primaryContainer,
+                    child: _isProcessing 
+                        ? const CircularProgressIndicator()
+                        : Icon(
+                            _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
+                            size: 48,
+                            color: _isRecording ? theme.colorScheme.onError : theme.colorScheme.onPrimaryContainer,
+                          ),
                   ),
+                  if (!_isRecording && !_isProcessing) ...[
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.auto_awesome_rounded, 
+                          size: 14, 
+                          color: theme.colorScheme.primary.withOpacity(0.8)
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Optimized for your device: $_maxMinutes min limit',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant.withOpacity(0.8),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ],

@@ -13,8 +13,15 @@ class LibraryScreen extends StatefulWidget {
 
 class _LibraryScreenState extends State<LibraryScreen> {
   final TranscriptionRepository _repository = TranscriptionRepository();
+  final ScrollController _scrollController = ScrollController();
+  
   List<TranscriptionEntry> _entries = [];
   bool _isLoading = true;
+  bool _isMoreLoading = false;
+  bool _hasMore = true;
+  int _offset = 0;
+  final int _limit = 20;
+  
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
 
@@ -22,15 +29,62 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void initState() {
     super.initState();
     _loadEntries();
+    _scrollController.addListener(_onScroll);
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
+      if (!_isMoreLoading && _hasMore && !_isLoading) {
+        _loadMoreEntries();
+      }
+    }
   }
 
   Future<void> _loadEntries() async {
-    setState(() => _isLoading = true);
-    final entries = await _repository.searchEntries(_searchQuery);
+    setState(() {
+      _isLoading = true;
+      _offset = 0;
+      _hasMore = true;
+    });
+    
+    final entries = await _repository.searchEntries(_searchQuery, offset: _offset, limit: _limit);
+    
     if (mounted) {
       setState(() {
         _entries = entries;
         _isLoading = false;
+        _offset = entries.length;
+        if (entries.length < _limit) {
+          _hasMore = false;
+        }
+      });
+    }
+  }
+
+  Future<void> _loadMoreEntries() async {
+    setState(() => _isMoreLoading = true);
+    
+    final newEntries = await _repository.searchEntries(_searchQuery, offset: _offset, limit: _limit);
+    
+    if (mounted) {
+      setState(() {
+        _isMoreLoading = false;
+        if (newEntries.isEmpty) {
+          _hasMore = false;
+        } else {
+          _entries.addAll(newEntries);
+          _offset += newEntries.length;
+          if (newEntries.length < _limit) {
+            _hasMore = false;
+          }
+        }
       });
     }
   }
@@ -124,9 +178,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         ),
                       )
                     : ListView.builder(
+                        controller: _scrollController,
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        itemCount: _entries.length,
+                        itemCount: _entries.length + (_hasMore ? 1 : 0),
                         itemBuilder: (context, index) {
+                          if (index == _entries.length) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 32.0),
+                              child: Center(child: CircularProgressIndicator()),
+                            );
+                          }
                           final entry = _entries[index];
                           return _buildHistoryCard(context, entry);
                         },
