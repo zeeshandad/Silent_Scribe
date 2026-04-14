@@ -187,11 +187,11 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
     int? maxMinutes = prefs.getInt('max_recording_minutes');
     int? maxTokens = prefs.getInt('max_context_tokens');
 
-    bool v3Stable = prefs.getBool('v3_metrics_stable') ?? false;
+    bool v4Stable = prefs.getBool('v4_metrics_stable') ?? false;
 
-    // Force re-calculation for the v3 stability build (Batch Size Sync + Bluejay identification)
-    if (maxMinutes == null || maxTokens == null || !v3Stable) {
-      debugPrint('SilentScribe: Re-calculating stable dynamic limits (v3)...');
+    // Force re-calculation for the v4 stability build (Updated Memory Tiers)
+    if (maxMinutes == null || maxTokens == null || !v4Stable) {
+      debugPrint('SilentScribe: Re-calculating stable dynamic limits (v4)...');
       final metrics = await SystemInfoService().calculateSystemMetrics();
       maxMinutes = metrics['maxMinutes']!;
       maxTokens = metrics['maxContextTokens']!;
@@ -199,7 +199,7 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       // Save them securely
       await prefs.setInt('max_context_tokens', maxTokens);
       await prefs.setInt('max_recording_minutes', maxMinutes);
-      await prefs.setBool('v3_metrics_stable', true);
+      await prefs.setBool('v4_metrics_stable', true);
     }
 
     if (mounted) {

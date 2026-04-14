@@ -63,16 +63,18 @@ class SystemInfoService {
     int maxContextTokens;
     int maxMinutes;
 
-    if (ramMB >= 11500 || (ramMB >= 8000 && flagship)) {
-      // Ultra-Tier (12GB+ RAM or 8GB+ with Flagship SoC)
-      maxContextTokens = 16384; // Conservative maximum for mobile stability
+    final isIOS = Platform.isIOS;
+
+    if (ramMB >= 10000 || (ramMB >= 8000 && flagship)) {
+      // Ultra-Tier (10GB+ RAM or 8GB+ with Flagship SoC)
+      maxContextTokens = 16384;
       maxMinutes = 60;
-    } else if (ramMB >= 7500 || flagship) {
-      // High-Tier (8GB+ RAM or standard Flagship like Pixel 7/8)
+    } else if (ramMB >= 6000 || (isIOS && flagship)) {
+      // High-Tier (6GB+ RAM or iOS Flagship)
       maxContextTokens = 8192;
       maxMinutes = 30;
     } else {
-      // Standard-Tier (4GB-6GB RAM e.g. Pixel 6a)
+      // Standard-Tier (4GB-6GB RAM)
       maxContextTokens = 4096;
       maxMinutes = 15;
     }

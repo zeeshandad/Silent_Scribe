@@ -29,15 +29,19 @@ class LLMService {
   Future<PerformanceLevel> _getPerformanceLevel() async {
     int ram = _systemInfoService.getTotalRamMB();
     bool flagship = await _systemInfoService.isFlagship;
+    bool isIOS = Platform.isIOS;
     
-    if (ram >= 8192 || flagship) return PerformanceLevel.ultra;
-    if (ram < 4096) return PerformanceLevel.legacy;
-    return PerformanceLevel.balanced;
+    if (ram >= 10000 || (ram >= 8000 && flagship)) return PerformanceLevel.ultra;
+    if (ram >= 6000 || (isIOS && flagship)) return PerformanceLevel.balanced;
+    return PerformanceLevel.legacy;
   }
 
   Future<LlamaConfig> _getOptimalComputeConfig(PerformanceLevel level, String modelPath) async {
-    // Force GPU (Metal) on all iOS devices for efficiency and stability
-    bool useGpu = level == PerformanceLevel.ultra || Platform.isIOS;
+    int ram = _systemInfoService.getTotalRamMB();
+    bool flagship = await _systemInfoService.isFlagship;
+
+    // Minimum 6GB for Android GPU, iOS handles Metal universally.
+    bool useGpu = Platform.isIOS || (ram >= 6000 && flagship);
     
     // Optimize thread affinity: Legacy relies entirely on CPU, prioritize higher threads.
     int nThreads = level == PerformanceLevel.legacy ? 4 : 2; 
@@ -47,8 +51,9 @@ class LLMService {
     final prefs = await SharedPreferences.getInstance();
     final contextSize = prefs.getInt('max_context_tokens') ?? 16384;
     
-    // Decouple batchSize from contextSize to prevent OOM on mobile. 512 is a safe standard.
-    int batchSize = (Platform.isAndroid || Platform.isIOS) ? 512 : contextSize;
+    // Decouple batchSize from contextSize to prevent OOM on mobile.
+    // Ensure we do not fall below 512; native plugin crashes if prompt length > batchSize.
+    int batchSize = useGpu ? 1024 : 512;
     
     debugPrint('LLMService: Initializing with contextSize: $contextSize, batchSize: $batchSize, useGpu: $useGpu');
     

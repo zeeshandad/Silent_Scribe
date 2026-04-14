@@ -17,11 +17,11 @@ SilentScribe implements a dynamic compute strategy that scales based on the host
 
 ### Compute Tiers
 
-| Tier | Requirements | Strategy | Context Size |
-| :--- | :--- | :--- | :--- |
-| **Ultra** | 8GB+ RAM & Flagship SoC* | **GPU Accelerated**: Uses GPU/NPU delegates. | 16,384 tokens |
-| **Balanced** | 4GB - 8GB RAM | **Optimized**: iOS uses GPU; Android uses CPU. | 8,192 tokens |
-| **Legacy** | < 4GB RAM | **Safety Mode**: iOS uses GPU; Android uses multi-threaded CPU. | 4,096 tokens |
+| Tier | Min RAM Requirements | GPU/CPU Assignment | Context Size | Max Audio |
+| :--- | :--- | :--- | :--- | :--- |
+| **Ultra** | 10GB+, or 8GB+ w/ Flagship SoC* | **GPU Accelerated** | 16,384 tokens | ~60 mins |
+| **High** | 6GB+ Android, or iOS Flagship | **iOS: GPU / Android: GPU if Flagship** | 8,192 tokens | ~30 mins |
+| **Standard/Legacy** | 4GB - 6GB | **CPU Only** (except iOS uses Metal) | 4,096 tokens | ~15 mins |
 
 *\*Flagship SoCs include Apple A14+, Snapdragon 8 Gen 1+, Google Tensor, and Dimensity 9000+.*
 
@@ -53,8 +53,8 @@ stateDiagram-v2
 ### Stability Hooks
 
 1.  **Memory Recovery Delay**: After transcription completes, the application enforces a **1000ms cooldown** before loading the LLM. This allows the OS to reclaim native buffers used by the Whisper engine, preventing peak memory spikes.
-2.  **Optimized Mobile Batch Size**: To prevent OOM (Out of Memory) crashes on mobile devices, the `batchSize` is decoupled from the `contextSize` and set to a safe standard of **512**. This drastically reduces peak memory overhead while maintaining full context window capabilities.
-3.  **iOS Universal GPU Acceleration**: All iOS devices force `useGpu: true`. The Apple Metal/Neural Engine backend is significantly more memory and energy efficient than CPU multi-threading for inference tasks.
+2.  **Optimized Mobile Batch Size**: To prevent OOM (Out of Memory) crashes during the prefill phase, `batchSize` is intrinsically decoupled from `contextSize`. GPU instances process at `512` safely, while CPU-only (Legacy tier) limits down to `256` to flatten RAM usage peaks.
+3.  **GPU Acceleration Limits**: Apple iOS devices universally force `useGpu: true` to leverage Metal. For Android, GPU is strictly bounded to Flagship devices meeting a **6GB minimum RAM threshold**, effectively preventing driver-induced Out-of-Memory crashes on low-end silicon.
 4.  **Android Large Heap**: The application manifest enables `android:largeHeap="true"`, requesting a larger memory budget from the Android OS for the Dalvik/ART heap.
 5.  **Safety Truncation**: Inputs are automatically truncated based on a density of **2.5 characters per token**. This prevents the LLM from exceeding its allocated context window.
 
