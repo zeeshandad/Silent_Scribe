@@ -202,28 +202,61 @@ class _TranscriptionDetailScreenState extends State<TranscriptionDetailScreen> {
                               onPressed: _isReProcessing ? null : _reProcess,
                               icon: _isReProcessing 
                                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                                : const Icon(Icons.refresh),
-                              label: const Text('Re-process'),
+                                : Icon(_formattedTextController.text.isEmpty ? Icons.auto_awesome : Icons.refresh),
+                              label: Text(_isReProcessing 
+                                ? 'Processing...' 
+                                : (_formattedTextController.text.isEmpty ? 'Format with AI' : 'Re-process')),
                             ),
                           ],
                         ),
                         const SizedBox(height: 16),
                         Expanded(
-                          child: TextField(
-                            controller: _formattedTextController,
-                            maxLines: null,
-                            expands: true,
-                            textAlignVertical: TextAlignVertical.top,
-                            decoration: InputDecoration(
-                              hintText: 'Enter formatted text...',
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(16),
-                                borderSide: BorderSide(color: theme.colorScheme.outlineVariant),
+                          child: Stack(
+                            children: [
+                              TextField(
+                                controller: _formattedTextController,
+                                maxLines: null,
+                                expands: true,
+                                textAlignVertical: TextAlignVertical.top,
+                                decoration: InputDecoration(
+                                  hintText: 'LLM generated text will appear here...',
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                    borderSide: BorderSide(color: theme.colorScheme.outlineVariant),
+                                  ),
+                                  filled: true,
+                                  fillColor: theme.colorScheme.surfaceContainer,
+                                ),
+                                style: const TextStyle(fontSize: 16, height: 1.5),
                               ),
-                              filled: true,
-                              fillColor: theme.colorScheme.surfaceContainer,
-                            ),
-                            style: const TextStyle(fontSize: 16, height: 1.5),
+                              if (_formattedTextController.text.isEmpty && !_isReProcessing)
+                                Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.auto_awesome_rounded,
+                                        size: 48,
+                                        color: theme.colorScheme.primary.withOpacity(0.2),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Text(
+                                        'No formatted text yet',
+                                        style: theme.textTheme.bodyLarge?.copyWith(
+                                          color: theme.colorScheme.onSurfaceVariant.withOpacity(0.5),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Select a style and tap "Format with AI"',
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: theme.colorScheme.onSurfaceVariant.withOpacity(0.4),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
                       ],

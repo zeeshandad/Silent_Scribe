@@ -51,9 +51,8 @@ class LLMService {
     final prefs = await SharedPreferences.getInstance();
     final contextSize = prefs.getInt('max_context_tokens') ?? 16384;
     
-    // Decouple batchSize from contextSize to prevent OOM on mobile.
-    // Ensure we do not fall below 512; native plugin crashes if prompt length > batchSize.
-    int batchSize = useGpu ? 1024 : 512;
+    // Decouple batchSize from contextSize to prevent OOM on mobile. 512 is a safe standard.
+    int batchSize = 512;
     
     debugPrint('LLMService: Initializing with contextSize: $contextSize, batchSize: $batchSize, useGpu: $useGpu');
     
@@ -97,11 +96,11 @@ class LLMService {
     await _waitForLock();
     try {
       if (_isInitialized) {
-        try {
-          await _llama.unloadModel();
-        } catch (_) {
-          // Ignore known native plugin destruct crash if it surfaces here.
-        }
+        // try {
+        //   await _llama.unloadModel();
+        // } catch (_) {
+        //   // Ignore known native plugin destruct crash if it surfaces here.
+        // }
         _isInitialized = false;
       }
     } finally {

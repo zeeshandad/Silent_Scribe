@@ -11,7 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'repository/transcription_repository.dart';
 import 'models/transcription_entry.dart';
 import 'screens/library_screen.dart';
-import 'services/llm_service.dart';
+import 'screens/transcription_detail_screen.dart';
 import 'services/sharing_service.dart';
 
 void main() async {
@@ -152,20 +152,10 @@ class TranscriptionScreen extends StatefulWidget {
 }
 
 class _TranscriptionScreenState extends State<TranscriptionScreen> {
-  String _selectedFormat = 'Polished Writing';
-  final List<String> _formats = [
-    'Polished Writing',
-    'Meeting Minutes',
-    'Executive Summary',
-    'Email Draft',
-    'Bullet Points',
-  ];
-
   late final AudioRecorder _audioRecorder;
   bool _isRecording = false;
   bool _isProcessing = false;
   String _transcribedText = 'Press the microphone button to start recording. Your speech will be transcribed securely on device.';
-  String _formattedText = 'Format your transcription with the local LLM. Results will appear here.';
   String? _lastRecordedPath;
   
   // Dynamic recording limit variables
@@ -173,7 +163,6 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   Timer? _recordingTimer;
   Duration _elapsedTime = Duration.zero;
   
-  final LLMService _llmService = LLMService();
   
   @override
   void initState() {
@@ -217,14 +206,12 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
   void dispose() {
     _recordingTimer?.cancel();
     _audioRecorder.dispose();
-    _llmService.unloadModel();
     super.dispose();
   }
 
   Future<void> _processAudio(String path) async {
     setState(() {
       _isProcessing = true;
-      _formattedText = 'Transcribing offline...';
     });
     
     try {
@@ -237,81 +224,52 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
       final rawText = response.text;
       debugPrint('SilentScribe: Transcription complete: ${rawText.length} chars');
       
-      setState(() {
-        _transcribedText = rawText;
-        _formattedText = 'Preparing High-Quality Output...';
-      });
-      
-      // Memory recovery delay: Allow OS to reclaim Whisper native buffers before LLM loading
-      // Extended to 1000ms for robust Android resource reclamation
-      await Future.delayed(const Duration(milliseconds: 1000));
-      
-      if (_transcribedText.isNotEmpty) {
-        _generateFormattedText(_transcribedText);
+      if (rawText.isNotEmpty) {
+        setState(() {
+          _transcribedText = rawText;
+          _isProcessing = false;
+        });
+        final entry = await _saveToHistory(rawText);
+        if (mounted && entry != null) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => TranscriptionDetailScreen(entry: entry),
+            ),
+          );
+        }
       } else {
         setState(() {
           _isProcessing = false;
-          _formattedText = 'Could not transcribe any dialogue. Please try again.';
+          _transcribedText = 'Could not transcribe any dialogue. Please try again.';
         });
       }
     } catch (e) {
       debugPrint('SilentScribe: Transcription error: $e');
       setState(() {
         _isProcessing = false;
-        _formattedText = 'Error during transcription: $e';
+        _transcribedText = 'Error during transcription: $e';
       });
     }
   }
 
-  Future<void> _generateFormattedText(String input) async {
-    setState(() {
-       _formattedText = '';
-    });
-    
-    try {
-      String fullText = '';
-      await for (final token in _llmService.generateFormattedTextStream(input, _selectedFormat)) {
-        fullText += token;
-        if (mounted) {
-          setState(() {
-            _formattedText = fullText;
-          });
-        }
-      }
-      
-      // Save to history after successful generation
-      await _saveToHistory();
-      
-    } catch (e) {
-      debugPrint('SilentScribe: Generation error: $e');
-      if (mounted) {
-        setState(() {
-          _formattedText = 'Generation error: $e';
-        });
-      }
-    } finally {
-      await _llmService.unloadModel();
-      if (mounted) {
-        setState(() {
-          _isProcessing = false;
-        });
-      }
-    }
-  }
 
-  Future<void> _saveToHistory() async {
+  Future<TranscriptionEntry?> _saveToHistory(String text) async {
     try {
       final entry = TranscriptionEntry()
-        ..rawTranscript = _transcribedText
-        ..formattedText = _formattedText
+        ..rawTranscript = text
+        ..formattedText = ''
         ..timestamp = DateTime.now()
-        ..selectedStyle = _selectedFormat
+        ..selectedStyle = 'Polished Writing'
         ..audioFilePath = _lastRecordedPath;
       
-      await TranscriptionRepository().saveEntry(entry);
-      debugPrint('SilentScribe: Saved to history.');
+      final id = await TranscriptionRepository().saveEntry(entry);
+      entry.id = id;
+      debugPrint('SilentScribe: Saved to history (ID: $id).');
+      return entry;
     } catch (e) {
       debugPrint('SilentScribe: Failed to save to history: $e');
+      return null;
     }
   }
 
@@ -426,8 +384,6 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildFormatSelector(theme),
-              const SizedBox(height: 24),
               Expanded(
                 child: _buildOutputArea(theme),
               ),
@@ -493,35 +449,6 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
     );
   }
 
-  Widget _buildFormatSelector(ThemeData theme) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: theme.colorScheme.outlineVariant.withOpacity(0.5)),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: _selectedFormat,
-          isExpanded: true,
-          items: _formats.map((String value) {
-            return DropdownMenuItem<String>(
-              value: value,
-              child: Text(value),
-            );
-          }).toList(),
-          onChanged: (String? newValue) {
-            if (newValue != null) {
-              setState(() {
-                _selectedFormat = newValue;
-              });
-            }
-          },
-        ),
-      ),
-    );
-  }
 
   Widget _buildOutputArea(ThemeData theme) {
     return Container(
@@ -530,111 +457,38 @@ class _TranscriptionScreenState extends State<TranscriptionScreen> {
         color: theme.colorScheme.surfaceContainer,
         borderRadius: BorderRadius.circular(24),
       ),
-      child: DefaultTabController(
-        length: 2,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TabBar(
-              dividerColor: Colors.transparent,
-              labelColor: theme.colorScheme.primary,
-              unselectedLabelColor: theme.colorScheme.onSurfaceVariant,
-              indicatorSize: TabBarIndicatorSize.tab,
-              tabs: const [
-                Tab(text: 'Original'),
-                Tab(text: 'Formatted'),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: TabBarView(
-                children: [
-                  SingleChildScrollView(
-                    child: Text(
-                      _transcribedText,
-                      style: TextStyle(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        fontSize: 16,
-                        height: 1.5,
-                      ),
-                    ),
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(
-                        child: SingleChildScrollView(
-                          child: Text(
-                            _formattedText,
-                            style: TextStyle(
-                              color: theme.colorScheme.onSurfaceVariant,
-                              fontSize: 16,
-                              height: 1.5,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const Divider(),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.copy_rounded, size: 20),
-                            onPressed: () => SharingService.copyToClipboard(context, _formattedText),
-                            tooltip: 'Copy to clipboard',
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.share_rounded, size: 20),
-                            onPressed: () => _showShareOptions(context),
-                            tooltip: 'Share',
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.text_snippet_rounded, color: theme.colorScheme.primary, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Transcription',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Expanded(
+            child: SingleChildScrollView(
+              child: Text(
+                _transcribedText,
+                style: TextStyle(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 16,
+                  height: 1.5,
+                ),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  void _showShareOptions(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.text_fields),
-              title: const Text('Share as Plain Text'),
-              onTap: () {
-                Navigator.pop(context);
-                SharingService.shareAsPlainText(_formattedText);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.picture_as_pdf),
-              title: const Text('Share as PDF Report'),
-              onTap: () {
-                Navigator.pop(context);
-                SharingService.shareAsPdf('SilentScribe - $_selectedFormat', _formattedText);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.image_outlined),
-              title: const Text('Share as Quote Card'),
-              onTap: () {
-                Navigator.pop(context);
-                SharingService.shareAsImage(context, _formattedText, _selectedFormat);
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
